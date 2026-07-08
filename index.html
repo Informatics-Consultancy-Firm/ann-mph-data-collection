@@ -133,6 +133,8 @@
   .done .sync{font:600 12px var(--body);padding:6px 12px;border-radius:99px;margin-bottom:24px;}
   .done .sync.on{background:var(--success-bg);color:var(--success);}
   .done .sync.off{background:var(--blue-50);color:var(--blue-600);}
+  .done .sync.checking{background:var(--blue-50);color:var(--blue-600);}
+  .done .sync.warn{background:#fff4d6;color:#b8860b;}
   .done .actions{width:100%;display:flex;flex-direction:column;gap:12px;}
 
   .dash{padding:20px 18px 30px;}
@@ -374,7 +376,7 @@ function startSurvey(){ ans={date:todayISO()}; idx=0; ended=false; renderQuestio
 function renderQuestion(){
   const vis=visibleList();
   while(idx<Q.length && Q[idx].when && !Q[idx].when(ans)) idx++;
-  if(idx>=Q.length){ finish(); return; }
+  if(idx>=Q.length){ renderReview(); return; }
   const q=Q[idx];
   const pos=vis.indexOf(q)+1, total=vis.length, pct=Math.round((pos-1)/total*100);
 
@@ -427,9 +429,9 @@ function refreshNext(){ const b=document.getElementById('nextBtn'); if(b) b.disa
 function nextQ(){
   const q=Q[idx];
   if(!isAnswered(q)){ toast('Please answer to continue'); return; }
-  if(q.id==='consent'&&ans.consent==='No'){ ended=true; finish(); return; }
+  if(q.id==='consent'&&ans.consent==='No'){ ended=true; finishAndSubmit(); return; }
   idx++; while(idx<Q.length&&Q[idx].when&&!Q[idx].when(ans)) idx++;
-  if(idx>=Q.length) finish(); else renderQuestion();
+  if(idx>=Q.length) renderReview(); else renderQuestion();
 }
 function prevQ(){
   if(idx===0){ renderHome(); return; }
@@ -437,17 +439,55 @@ function prevQ(){
   renderQuestion();
 }
 
-function finish(){
+function finishAndSubmit(){
   const rec=Object.assign({},ans,{_id:ans.qid||('REC-'+(records.length+1)),_ts:new Date().toISOString(),_consent:ans.consent||(ended?'No':'')});
   records.push(rec); Store.set(REC_KEY,records);
-  submitToSheet(rec);
   renderDone(ended);
+  if(GAS_URL) verifySync(rec);
+}
+function reviewBack(){ idx=Q.length; prevQ(); }
+function renderReview(){
+  const vis=visibleList();
+  let body='',cur='';
+  vis.forEach(q=>{
+    let v = q.type==='auto'?ans.qid:ans[q.id];
+    if(v===undefined||v==='') v='—';
+    else if(q.other&&v===q.other&&ans[q.id+'_other']) v='Other — '+ans[q.id+'_other'];
+    if(q.s!==cur){ cur=q.s; body+=`<div class="rd-sec">${esc(cur)}</div>`; }
+    body+=`<div class="rd-item"><span class="q">${esc(q.id)}. ${esc(q.q)}</span><span class="a">${esc(v)}</span></div>`;
+  });
+  app.innerHTML=`<div class="appbar">
+      <button class="ico-btn" onclick="reviewBack()">${I.back}</button>
+      <div class="titles"><div class="eyebrow">Almost done</div><div class="title">Review answers</div></div>
+    </div>
+    <div class="body"><div class="rec-detail">
+      <div class="rd-head"><div class="id">${esc(ans.qid||'—')}</div><div class="meta">${esc(ans.facility||'—')} · ${esc(ans.date||'')}</div></div>
+      ${body}
+    </div></div>
+    <div class="footer"><button class="btn btn-primary btn-block" onclick="finishAndSubmit()">${GAS_URL?'Submit to Google Sheets':'Save interview'}</button></div>`;
 }
 function submitToSheet(rec){
   if(!GAS_URL) return;
   try{
-    fetch(GAS_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(rec)});
+    var name='post_'+Date.now();
+    var ifr=document.createElement('iframe'); ifr.name=name; ifr.style.display='none'; document.body.appendChild(ifr);
+    var form=document.createElement('form'); form.method='POST'; form.action=GAS_URL; form.target=name;
+    var inp=document.createElement('input'); inp.type='hidden'; inp.name='data'; inp.value=JSON.stringify(rec);
+    form.appendChild(inp); document.body.appendChild(form); form.submit();
+    setTimeout(function(){ try{ form.remove(); ifr.remove(); }catch(e){} },10000);
   }catch(e){}
+}
+function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
+function verifySync(rec){
+  fetchLive(pre=>{
+    const preN=Array.isArray(pre)?pre.length:null;
+    submitToSheet(rec);
+    setTimeout(()=>fetchLive(post=>{
+      if(Array.isArray(post)&&preN!=null&&post.length>preN) setSyncStatus('on','☁ Saved to Google Sheet');
+      else if(Array.isArray(post)&&preN!=null) setSyncStatus('warn','⚠ Reached sheet but row not added — redeploy/authorize');
+      else setSyncStatus('warn','⚠ Can’t reach the sheet — check deployment access');
+    }),3200);
+  });
 }
 function renderDone(declined){
   const synced=!!GAS_URL;
@@ -455,7 +495,7 @@ function renderDone(declined){
     <div class="circle ${declined?'end':'ok'}">${declined?I.door:I.check}</div>
     <h2>${declined?'Interview ended':'Interview saved'}</h2>
     <p>${declined?'The participant declined to take part. Thank you for recording this.':'This response has been recorded'+(synced?' and sent to Google Sheets.':' on this device.')}</p>
-    <span class="sync ${synced?'on':'off'}">${synced?'☁ Synced to Google Sheet':'◍ Saved on device only'}</span>
+    <span class="sync ${synced?'checking':'off'}" id="syncPill">${synced?'Checking Google Sheet…':'◍ Saved on this phone only'}</span>
     <div class="actions">
       <button class="btn btn-primary btn-block" onclick="startSurvey()">Start new interview</button>
       <button class="btn btn-ghost btn-block" onclick="openDash()">Go to dashboard</button>
