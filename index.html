@@ -334,11 +334,6 @@ function renderHome(){
       </div>
       <div class="home-inner">
         <div class="count-chip"><span class="n">${n}</span><span class="lbl">interview${n===1?'':'s'} saved on this device</span></div>
-        <div class="conn ${connected?'ok':''}" onclick="setGAS()">
-          <span class="d"></span>
-          <span>${connected?'Connected to Google Sheet':'Not connected — data stays on device'}</span>
-          <span class="edit">${connected?'Change':'Connect'}</span>
-        </div>
         <p class="section-eyebrow">What would you like to do?</p>
         <button class="action-card" onclick="startSurvey()">
           <span class="ic blue">${I.clip}</span>
@@ -443,8 +438,23 @@ function finishAndSubmit(){
   const rec=Object.assign({},ans,{_id:ans.qid||('REC-'+(records.length+1)),_ts:new Date().toISOString(),_consent:ans.consent||(ended?'No':'')});
   records.push(rec); Store.set(REC_KEY,records);
   renderDone(ended);
-  if(GAS_URL) verifySync(rec);
+  if(GAS_URL){
+    setSyncStatus('checking','Sending to Google Sheet…');
+    sendToSheet(rec,ok=>setSyncStatus(ok?'on':'warn', ok?'☁ Saved to Google Sheet':'⚠ Not saved — open in a browser, then redeploy Code.gs'));
+  }
 }
+/* Reliable cross-origin write: JSONP GET that returns confirmation. */
+function sendToSheet(rec,cb){
+  if(!GAS_URL){ cb&&cb(false); return; }
+  const fn='__w'+Date.now(); let done=false;
+  const s=document.createElement('script');
+  window[fn]=res=>{ done=true; delete window[fn]; s.remove(); cb&&cb(!!(res&&res.status==='ok')); };
+  s.onerror=()=>{ if(done)return; delete window[fn]; s.remove(); cb&&cb(false); };
+  s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'data='+encodeURIComponent(JSON.stringify(rec))+'&callback='+fn+'&t='+Date.now();
+  document.body.appendChild(s);
+  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb&&cb(false); } },15000);
+}
+function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
 function reviewBack(){ idx=Q.length; prevQ(); }
 function renderReview(){
   const vis=visibleList();
@@ -465,29 +475,6 @@ function renderReview(){
       ${body}
     </div></div>
     <div class="footer"><button class="btn btn-primary btn-block" onclick="finishAndSubmit()">${GAS_URL?'Submit to Google Sheets':'Save interview'}</button></div>`;
-}
-function submitToSheet(rec){
-  if(!GAS_URL) return;
-  try{
-    var name='post_'+Date.now();
-    var ifr=document.createElement('iframe'); ifr.name=name; ifr.style.display='none'; document.body.appendChild(ifr);
-    var form=document.createElement('form'); form.method='POST'; form.action=GAS_URL; form.target=name;
-    var inp=document.createElement('input'); inp.type='hidden'; inp.name='data'; inp.value=JSON.stringify(rec);
-    form.appendChild(inp); document.body.appendChild(form); form.submit();
-    setTimeout(function(){ try{ form.remove(); ifr.remove(); }catch(e){} },10000);
-  }catch(e){}
-}
-function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
-function verifySync(rec){
-  fetchLive(pre=>{
-    const preN=Array.isArray(pre)?pre.length:null;
-    submitToSheet(rec);
-    setTimeout(()=>fetchLive(post=>{
-      if(Array.isArray(post)&&preN!=null&&post.length>preN) setSyncStatus('on','☁ Saved to Google Sheet');
-      else if(Array.isArray(post)&&preN!=null) setSyncStatus('warn','⚠ Reached sheet but row not added — redeploy/authorize');
-      else setSyncStatus('warn','⚠ Can’t reach the sheet — check deployment access');
-    }),3200);
-  });
 }
 function renderDone(declined){
   const synced=!!GAS_URL;
