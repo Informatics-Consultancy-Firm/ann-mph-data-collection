@@ -623,15 +623,14 @@ function renderRecordDetail(){
    DASHBOARD (LIVE from Google Sheets only, nice charts)
    ========================================================= */
 let dashFilter2='all';
-function openDash(){
+function openDash(retry){
   dashFilter2='all';
   if(!GAS_URL){ dashSource='none'; drawDash(); return; }
   dashLoading=true; drawDash();
   fetchLive(rows=>{
-    dashLoading=false;
-    if(rows&&Array.isArray(rows)){ dashData=rows; dashSource='live'; }
-    else { dashSource='error'; }
-    drawDash();
+    if(rows&&Array.isArray(rows)){ dashData=rows; dashSource='live'; dashLoading=false; drawDash(); return; }
+    if(!retry){ openDash(true); return; }   // one silent retry — covers GAS cold start / slow mobile data
+    dashLoading=false; dashSource='error'; drawDash();
   });
 }
 function fetchLive(cb){
@@ -641,7 +640,7 @@ function fetchLive(cb){
   s.onerror=()=>{ if(done)return; delete window[fn]; s.remove(); cb(null); };
   s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'callback='+fn+'&t='+Date.now();
   document.body.appendChild(s);
-  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb(null);} },12000);
+  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb(null);} },20000);
 }
 function refreshDash(){ openDash(); }
 function setFilter(f){ dashFilter2=f; drawDash(); }
@@ -759,10 +758,10 @@ function drawDash(){
   }
   if(dashSource==='error'){
     app.innerHTML=header+`<div class="body"><div class="dash"><div class="empty">
-      <div class="ic">${I.cloud}</div><h3>Couldn’t reach the sheet</h3>
-      <p>Check that the Apps Script is deployed with access set to “Anyone”, then retry.</p>
+      <div class="ic">${I.cloud}</div><h3>Couldn’t load live data</h3>
+      <p>On a phone this is usually a slow or dropped connection, or the app being opened inside another app’s browser (e.g. WhatsApp). Open it in Chrome, check your connection, then retry.</p>
       <button class="btn btn-primary btn-block" onclick="openDash()">Retry</button>
-      <div style="height:12px"></div><button class="btn btn-ghost btn-block" onclick="openRecords()">View device records instead</button>
+      <div style="height:12px"></div><button class="btn btn-ghost btn-block" onclick="openRecords()">View this device’s records instead</button>
     </div></div></div>`;
     return;
   }
