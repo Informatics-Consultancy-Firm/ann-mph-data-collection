@@ -396,6 +396,7 @@ function renderHome(){
           <span>${connected?'Google Sheet connected':'Not connected — tap to add /exec URL'}</span>
           <span class="edit">${connected?'Change':'Connect'}</span>
         </div>
+        ${connected?`<button class="btn btn-ghost btn-block" onclick="testConn()" style="margin:-10px 0 22px">Test connection</button>`:''}
         <p class="section-eyebrow">What would you like to do?</p>
         <button class="action-card" onclick="startSurvey()">
           <span class="ic blue">${I.clip}</span>
@@ -424,6 +425,25 @@ function setGAS(){
   if(!t){ GAS_URL=DEFAULT_GAS_URL; Store.set(URL_KEY,DEFAULT_GAS_URL); toast('Restored built-in URL'); renderHome(); return; }
   if(t.indexOf('script.google.com')===-1){ toast('That doesn’t look like a /exec URL'); return; }
   GAS_URL=t; Store.set(URL_KEY,t); toast('Google Sheet connected'); renderHome();
+}
+
+/* Ping the Google Sheet and report clearly what happened. Helps tell apart a
+   network/firewall block, a browser-extension block, and a bad deployment. */
+function testConn(){
+  if(!GAS_URL){ toast('Connect a Google Sheet first'); return; }
+  toast('Testing connection…');
+  const fn='__p'+Date.now(); let done=false;
+  const s=document.createElement('script');
+  window[fn]=res=>{ done=true; delete window[fn]; s.remove();
+    if(res&&res.ok){ alert('✓ Connection OK.\n\nReached the Google Sheet — it currently has '+res.rows+' row(s).\n\nIf a sync still fails on this device, it is almost certainly a browser extension / ad-blocker. Try an incognito window or a different browser.'); }
+    else { alert('Reached the server, but it did not answer as expected.\n\nRe-check the Apps Script deployment: Who has access must be "Anyone", then Deploy ▸ New version.'); }
+  };
+  s.onerror=()=>{ if(done)return; delete window[fn]; s.remove();
+    alert('✗ Could not reach the Google Sheet from this device.\n\nOn a laptop this is usually:\n• Network / Wi-Fi / firewall blocking script.google.com — try a phone hotspot.\n• An ad-blocker or privacy extension — try an incognito window.\n• A wrong /exec URL or a deployment not shared with "Anyone".\n\nTip: open the /exec URL directly in this browser. If you see a Google sign-in or an error instead of data, that is the cause.'); };
+  s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'ping=1&callback='+fn+'&t='+Date.now();
+  document.body.appendChild(s);
+  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){}
+    alert('✗ Timed out reaching the Google Sheet.\n\nThe request never came back — usually a firewall/network block or an extension. Try an incognito window or a phone hotspot, and open the /exec URL directly to confirm it loads.'); } },15000);
 }
 
 /* =========================================================
@@ -568,16 +588,17 @@ function finishAndSubmit(){
     });
   }
 }
-/* Reliable cross-origin write: JSONP GET that returns confirmation. */
+/* Reliable cross-origin write: JSONP GET that returns confirmation.
+   cb(ok, reason) where reason is 'ok' | 'blocked' | 'timeout' | 'nourl'. */
 function sendToSheet(rec,cb){
-  if(!GAS_URL){ cb&&cb(false); return; }
-  const fn='__w'+Date.now(); let done=false;
+  if(!GAS_URL){ cb&&cb(false,'nourl'); return; }
+  const fn='__w'+Date.now()+Math.floor(Math.random()*1000); let done=false;
   const s=document.createElement('script');
-  window[fn]=res=>{ done=true; delete window[fn]; s.remove(); cb&&cb(!!(res&&res.status==='ok')); };
-  s.onerror=()=>{ if(done)return; delete window[fn]; s.remove(); cb&&cb(false); };
+  window[fn]=res=>{ done=true; delete window[fn]; s.remove(); cb&&cb(!!(res&&res.status==='ok'),'ok'); };
+  s.onerror=()=>{ if(done)return; done=true; delete window[fn]; s.remove(); cb&&cb(false,'blocked'); };
   s.src=GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'data='+encodeURIComponent(JSON.stringify(rec))+'&callback='+fn+'&t='+Date.now();
   document.body.appendChild(s);
-  setTimeout(()=>{ if(!done){ try{delete window[fn]; s.remove();}catch(e){} cb&&cb(false); } },15000);
+  setTimeout(()=>{ if(!done){ done=true; try{delete window[fn]; s.remove();}catch(e){} cb&&cb(false,'timeout'); } },15000);
 }
 function setSyncStatus(cls,text){ const el=document.getElementById('syncPill'); if(!el) return; el.className='sync '+cls; el.textContent=text; }
 
@@ -877,14 +898,28 @@ function drawDash(){
 }
 
 /* ---------- data tools ---------- */
+/* Canonical export columns — identical to the Google Sheet (same order + headers),
+   so the CSV and the Sheet always match. Internal fields (_uid, _synced, _idLegacy,
+   device, qid, _consent) are deliberately excluded. */
+function exportColumns(){
+  const cols=[{k:'_ts',h:'Submitted at'}];
+  Q.forEach(q=>{
+    if(q.type==='auto'){ cols.push({k:'_id',h:'Questionnaire ID'}); return; } // qid -> _id
+    cols.push({k:q.id,h:q.q});
+    if(q.other) cols.push({k:q.id+'_other',h:q.q+' — Other (specify)'});
+  });
+  return cols;
+}
 function exportData(data,name){
   if(!data||!data.length){ toast('No data to export'); return; }
-  const base=['_id','_ts','_consent'].concat(Q.map(q=>q.id)).concat(Q.filter(q=>q.other).map(q=>q.id+'_other'));
-  const extra=[]; data.forEach(r=>Object.keys(r).forEach(k=>{if(base.indexOf(k)===-1&&extra.indexOf(k)===-1)extra.push(k);}));
-  const cols=base.concat(extra);
-  const cell=v=>{v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
-  const csv=[cols.join(',')].concat(data.map(r=>cols.map(c=>cell(r[c])).join(','))).join('\n');
-  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name||'data.csv';
+  const cols=exportColumns();
+  const cell=v=>{v=v==null?'':String(v); return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  const csv=[cols.map(c=>cell(c.h)).join(',')]
+    .concat(data.map(r=>cols.map(c=>cell(r[c.k])).join(',')))
+    .join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8;'})); // BOM = Excel opens accents correctly
+  a.download=name||'data.csv';
   document.body.appendChild(a); a.click(); a.remove(); toast('CSV exported');
 }
 function clearAll(){ if(!confirm('Delete all interviews stored on this phone?'))return; records=[]; Store.set(REC_KEY,records); renderRecords(); }
@@ -906,19 +941,28 @@ function syncAllToSheet(forceAll){
   const btn=document.getElementById(forceAll?'syncAllForceBtn':'syncAllBtn');
   const btns=document.querySelectorAll('#syncAllBtn,#syncAllForceBtn');
   btns.forEach(b=>b.disabled=true);
-  let i=0, ok=0, fail=0;
+  let i=0, ok=0, fail=0, lastReason='';
   const step=()=>{
     if(i>=pending.length){
       Store.set(REC_KEY,records);
-      toast(ok+' synced'+(fail?', '+fail+' failed — retry when online':''));
+      if(fail){
+        const hint = lastReason==='blocked'
+          ? 'The request was blocked before it reached Google — on a laptop this is almost always a browser extension or ad-blocker. Open this page in an incognito/private window (extensions are off there) and try again.'
+          : lastReason==='timeout'
+          ? 'The request timed out — usually a network or firewall block on this connection. Try tethering to a phone hotspot, then sync again.'
+          : 'Check the Google Sheet connection and try again.';
+        alert(ok+' synced, '+fail+' failed.\n\n'+hint);
+      } else {
+        toast(ok+' synced');
+      }
       renderRecords();
       return;
     }
     const rec=pending[i];
     if(!rec._uid){ rec._uid='u'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
     if(btn) btn.textContent='Syncing '+(i+1)+' / '+pending.length+'…';
-    sendToSheet(rec,res=>{
-      if(res){ rec._synced=true; ok++; } else { fail++; }
+    sendToSheet(rec,(res,reason)=>{
+      if(res){ rec._synced=true; ok++; } else { fail++; lastReason=reason; }
       Store.set(REC_KEY,records);   // save progress after every record
       i++; setTimeout(step,400);    // small gap = gentler on Apps Script quota
     });
