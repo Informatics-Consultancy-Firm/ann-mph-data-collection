@@ -237,7 +237,8 @@
    CONFIG — paste your Google Apps Script Web App URL here,
    or tap "Connect Google Sheet" on the home screen.
    ========================================================= */
-let GAS_URL = "https://script.google.com/macros/s/AKfycbweUlnek3AAc0rflT1M7HKn8W0eLkiyqiBDEuDRojO5mZizIUySUC5Xm-u0p6ZBGTqt/exec";
+const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbweUlnek3AAc0rflT1M7HKn8W0eLkiyqiBDEuDRojO5mZizIUySUC5Xm-u0p6ZBGTqt/exec";
+let GAS_URL = DEFAULT_GAS_URL;
 
 /* ---------- storage (localStorage w/ in-memory fallback) ---------- */
 const Store = (() => {
@@ -248,9 +249,21 @@ const Store = (() => {
     set(k,v){ if(ok){ try{ localStorage.setItem(k,JSON.stringify(v)); return; }catch(e){} } mem[k]=v; }
   };
 })();
-const REC_KEY='iptp_records_v1', URL_KEY='iptp_gas_url_v1';
+const REC_KEY='iptp_records_v1', URL_KEY='iptp_gas_url_v1', GAS_DEFAULT_KEY='iptp_gas_default_v1';
 let records = Store.get(REC_KEY,[]);
-GAS_URL = Store.get(URL_KEY, GAS_URL) || GAS_URL;
+/* If the built-in URL shipped in this file differs from the one this phone last
+   saw, adopt the built-in one and wipe any stale custom URL. This guarantees a
+   redeploy reaches every phone instead of being blocked by an old cached URL. */
+(function(){
+  const seenDefault = Store.get(GAS_DEFAULT_KEY, '');
+  if(seenDefault !== DEFAULT_GAS_URL){
+    GAS_URL = DEFAULT_GAS_URL;
+    Store.set(URL_KEY, DEFAULT_GAS_URL);
+    Store.set(GAS_DEFAULT_KEY, DEFAULT_GAS_URL);
+  } else {
+    GAS_URL = Store.get(URL_KEY, DEFAULT_GAS_URL) || DEFAULT_GAS_URL;
+  }
+})();
 
 /* =========================================================
    Questionnaire (facility asked before the auto ID)
@@ -357,7 +370,12 @@ function renderHome(){
         <p>Determinants of IPTp-SP uptake among pregnant women in antenatal care, Western Area, Sierra Leone.</p>
       </div>
       <div class="home-inner">
-        <div class="count-chip"><span class="n">${n}</span><span class="lbl">interview${n===1?'':'s'} saved on this device</span></div>
+        <div class="count-chip"><span class="n">${n}</span><span class="lbl">interview${n===1?'':'s'} saved on this device${pendingCount()?` · <b style="color:var(--warn)">${pendingCount()} not yet synced</b>`:''}</span></div>
+        <div class="conn ${connected?'ok':''}" onclick="setGAS()">
+          <span class="d"></span>
+          <span>${connected?'Google Sheet connected':'Not connected — tap to add /exec URL'}</span>
+          <span class="edit">${connected?'Change':'Connect'}</span>
+        </div>
         <p class="section-eyebrow">What would you like to do?</p>
         <button class="action-card" onclick="startSurvey()">
           <span class="ic blue">${I.clip}</span>
@@ -380,11 +398,12 @@ function renderHome(){
 
 function setGAS(){
   const cur=GAS_URL||'';
-  const v=prompt('Paste your Google Apps Script Web App URL\n(ends with /exec):', cur);
+  const v=prompt('Paste your Google Apps Script Web App URL (ends with /exec).\n\nLeave blank to restore the built-in default URL.', cur);
   if(v===null) return;
   const t=v.trim();
-  if(t && t.indexOf('script.google.com')===-1){ toast('That doesn’t look like a /exec URL'); return; }
-  GAS_URL=t; Store.set(URL_KEY,t); toast(t?'Google Sheet connected':'Disconnected'); renderHome();
+  if(!t){ GAS_URL=DEFAULT_GAS_URL; Store.set(URL_KEY,DEFAULT_GAS_URL); toast('Restored built-in URL'); renderHome(); return; }
+  if(t.indexOf('script.google.com')===-1){ toast('That doesn’t look like a /exec URL'); return; }
+  GAS_URL=t; Store.set(URL_KEY,t); toast('Google Sheet connected'); renderHome();
 }
 
 /* =========================================================
@@ -512,12 +531,21 @@ function submitOnePage(){
 }
 
 function finishAndSubmit(){
-  const rec=Object.assign({},ans,{_id:ans.qid||('REC-'+(records.length+1)),_ts:new Date().toISOString(),_consent:ans.consent||(ended?'No':'')});
+  const rec=Object.assign({},ans,{
+    _id:ans.qid||('REC-'+(records.length+1)),
+    _ts:new Date().toISOString(),
+    _consent:ans.consent||(ended?'No':''),
+    _uid:'u'+Date.now().toString(36)+Math.random().toString(36).slice(2,8), // globally unique -> safe dedup
+    _synced:false
+  });
   records.push(rec); Store.set(REC_KEY,records);
   renderDone(ended);
   if(GAS_URL){
     setSyncStatus('checking','Sending to Google Sheet…');
-    sendToSheet(rec,ok=>setSyncStatus(ok?'on':'warn', ok?'☁ Saved to Google Sheet':'⚠ Not saved — open in a browser, then redeploy Code.gs'));
+    sendToSheet(rec,ok=>{
+      if(ok){ rec._synced=true; Store.set(REC_KEY,records); }
+      setSyncStatus(ok?'on':'warn', ok?'☁ Saved to Google Sheet':'⚠ Not saved — kept on this phone. Use “Sync to Google Sheet” in Records once online.');
+    });
   }
 }
 /* Reliable cross-origin write: JSONP GET that returns confirmation. */
@@ -591,6 +619,7 @@ function renderRecords(){
         ${up?`<span class="pill ${up==='Yes'?'yes':'no'}">IPTp ${esc(up)}</span>`:`<span class="pill no">Declined</span>`}
       </div>`;}).join(''):'<div style="font:400 13px var(--body);color:var(--muted);padding:14px 0">No records for this facility.</div>'}
     </div>
+    ${GAS_URL?`<button class="btn btn-primary btn-block" id="syncAllBtn" onclick="syncAllToSheet()" style="margin-bottom:12px" ${pendingCount()?'':'disabled'}>☁ Sync to Google Sheet${pendingCount()?' ('+pendingCount()+' pending)':' — all synced'}</button>`:`<button class="btn btn-primary btn-block" onclick="setGAS()" style="margin-bottom:12px">Connect Google Sheet to sync</button>`}
     <div class="dash-tools">
       <button class="btn btn-ghost" onclick="exportData(recFiltered().map(x=>x.r),'iptp_records.csv')">Export CSV</button>
       <button class="btn btn-danger" onclick="clearAll()">Clear all</button>
@@ -836,6 +865,37 @@ function exportData(data,name){
   document.body.appendChild(a); a.click(); a.remove(); toast('CSV exported');
 }
 function clearAll(){ if(!confirm('Delete all interviews stored on this phone?'))return; records=[]; Store.set(REC_KEY,records); renderRecords(); }
+
+function pendingCount(){ return records.filter(r=>r._synced!==true).length; }
+
+/* Push every not-yet-synced interview to the Google Sheet, one at a time.
+   Records already confirmed (_synced===true) are skipped, and the server
+   dedupes on _uid, so this is safe to run repeatedly without duplicating. */
+function syncAllToSheet(){
+  if(!GAS_URL){ toast('Connect a Google Sheet first'); return; }
+  const pending=records.filter(r=>r._synced!==true);
+  if(!pending.length){ toast('All records already synced'); return; }
+  if(!confirm('Send '+pending.length+' unsynced interview'+(pending.length>1?'s':'')+' to the Google Sheet?\n\nAlready-synced records are skipped, so nothing is duplicated.')) return;
+  const btn=document.getElementById('syncAllBtn'); if(btn) btn.disabled=true;
+  let i=0, ok=0, fail=0;
+  const step=()=>{
+    if(i>=pending.length){
+      Store.set(REC_KEY,records);
+      toast(ok+' synced'+(fail?', '+fail+' failed — retry when online':''));
+      renderRecords();
+      return;
+    }
+    const rec=pending[i];
+    if(!rec._uid){ rec._uid='u'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+    if(btn) btn.textContent='Syncing '+(i+1)+' / '+pending.length+'…';
+    sendToSheet(rec,res=>{
+      if(res){ rec._synced=true; ok++; } else { fail++; }
+      Store.set(REC_KEY,records);   // save progress after every record
+      i++; setTimeout(step,400);    // small gap = gentler on Apps Script quota
+    });
+  };
+  step();
+}
 
 function seed(){
   const pk=a=>a[Math.floor(Math.random()*a.length)], w=(a,p)=>Math.random()<p?a[0]:a[1];
