@@ -238,7 +238,7 @@
    or tap "Connect Google Sheet" on the home screen.
    ========================================================= */
 const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbweUlnek3AAc0rflT1M7HKn8W0eLkiyqiBDEuDRojO5mZizIUySUC5Xm-u0p6ZBGTqt/exec";
-const APP_VERSION = "2026-07-16b";
+const APP_VERSION = "2026-07-16c";
 let GAS_URL = DEFAULT_GAS_URL;
 
 /* ---------- storage (localStorage w/ in-memory fallback) ---------- */
@@ -436,7 +436,7 @@ function testConn(){
   toast('Testing connection…');
   let settled=false;
   const ok=(rows)=>{ if(settled)return; settled=true; alert('✓ Connection OK.\n\nReached the Google Sheet — it has '+rows+' row(s). Syncing should work on this device.'); };
-  const bad=()=>{ if(settled)return; settled=true; alert('✗ Could not reach the Google Sheet on this device.\n\nMost common on a phone:\n• The page is open inside another app (WhatsApp / Facebook / Messenger). Tap the ⋮ menu and choose "Open in Chrome/Browser".\n• A privacy browser or ad-blocker (Brave, DuckDuckGo, Opera, a blocker app) is blocking script.google.com. Try Chrome or Safari.\n• Network/firewall or a data-saver is blocking it. Try mobile data or a different Wi-Fi.\n\nTip: open the /exec URL directly in this browser — if it shows data, the block is on this app/browser.'); };
+  const bad=()=>{ if(settled)return; settled=true; alert('✗ Could not reach the Google Sheet on this device.\n\nMOST LIKELY: the Apps Script deployment is set to "Anyone with a Google account". It must be "Anyone". Fix: Deploy ▸ Manage deployments ▸ edit ▸ Who has access: Anyone ▸ New version.\n\nOther causes:\n• The page is open inside another app (WhatsApp / Facebook / Messenger). Tap ⋮ and choose "Open in Chrome/Browser".\n• A privacy browser or ad-blocker (Brave, DuckDuckGo, blocker app) — try Chrome or Safari.\n\nTip: open the /exec URL directly. If it shows a Google sign-in, the access setting is the cause.'); };
   // fetch ping
   try{
     fetch(GAS_URL+(GAS_URL.indexOf('?')>-1?'&':'?')+'ping=1&t='+Date.now(),{redirect:'follow'})
@@ -1006,7 +1006,7 @@ function syncAllToSheet(forceAll){
       Store.set(REC_KEY,records);
       if(fail){
         const hint = lastReason==='blocked'
-          ? 'The request was blocked before reaching Google. This is a browser block:\n• If the page is open inside WhatsApp/Facebook/Messenger, tap ⋮ and choose "Open in Chrome/Browser".\n• A privacy browser or ad-blocker (Brave, DuckDuckGo, blocker app) can block script.google.com — try Chrome or Safari.'
+          ? 'The request never reached Google. Most likely the Apps Script deployment is set to "Anyone with a Google account" — it must be "Anyone" (Deploy ▸ Manage deployments ▸ edit ▸ Who has access: Anyone ▸ New version).\n\nIf that is already correct: the page may be open inside WhatsApp/Facebook (open it in Chrome), or a privacy browser/ad-blocker is blocking it (use Chrome or Safari).'
           : lastReason==='timeout'
           ? 'The request timed out — usually a network, firewall, or data-saver block on this connection. Try mobile data or a phone hotspot, then sync again.'
           : 'Check the Google Sheet connection and try again.';
